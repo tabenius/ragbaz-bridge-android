@@ -20,9 +20,18 @@ adb shell am broadcast -a com.ragbaz.bridge.SEND_SMS --es to "+46762868969" --es
 
 The debug application opens a full-duplex JSON-lines listener on
 `127.0.0.1:8769` while `MainActivity` exists. Start the activity, use
-`adb forward tcp:8769 tcp:8769`, and run `python3 -m debug` from the Indra
+`python3 -m debug.pair --serial SERIAL` from Indra to provision a per-pair key,
+then use `adb forward tcp:8769 tcp:8769`, and run `python3 -m debug` from the Indra
 checkout. The protocol is documented in `indra/docs/android-debug-link.md`.
 Messages have sender UTC/monotonic timestamps and per-connection sequence
 numbers. Android sends unsolicited hello/heartbeat events and timestamped
 receipts; `DebugServer.publish()` can send additional events independently.
 Queues and frames are bounded. This endpoint does not dispatch SMS commands.
+
+The endpoint requires mutual nonce-based HMAC-SHA256 authentication before
+accepting traffic. The key is stored only in the app's private
+`files/indra-debug.key`; it is provisioned via adb `run-as`, never via TCP.
+All frames have direction-separated session MACs and increasing sequences.
+Unpaired/wrong-key peers and forged frames are disconnected. No unauthenticated
+fallback is provided. `python3 -m debug --heartbeat` measures latency and clock
+offset relative to the host and an NTP reference without changing either clock.
