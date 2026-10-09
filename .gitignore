@@ -1,0 +1,15 @@
+# Local build products and machine configuration
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+
+# Credentials and signing material
+.env
+.env.*
+*.jks
+*.keystore
+*.key
+*.pem
+*.private.*
