@@ -1,0 +1,127 @@
+// CycloneDX inventories from resolved Gradle graphs, not handwritten dependency lists.
+// No extra plugin/runtime dependency is needed to generate these reports.
+import groovy.json.JsonOutput
+import java.security.MessageDigest
+import java.time.Instant
+
+tasks.register('sbom') {
+    group = 'verification'
+    description = 'Generate build and runtime CycloneDX JSON for -PsbomVariant=debug|release'
+    dependsOn { ":app:assemble${(findProperty('sbomVariant') ?: 'debug').toString().capitalize()}" }
+    // Resolve at execution, once Android has configured the variant classpaths.
+    doLast {
+        def app = project(':app')
+        def variant = (findProperty('sbomVariant') ?: 'debug').toString()
+        if (!(variant in ['debug', 'release'])) {
+            throw new GradleException('sbomVariant must be debug or release')
+        }
+        def capitalized = variant.capitalize()
+        def generatedAt = Instant.now().toString()
+        def reports = file('sbom')
+        reports.mkdirs()
+        def apks = app.layout.buildDirectory.dir("outputs/apk/${variant}").get().asFile.listFiles()
+            .findAll { it.name.endsWith('.apk') }
+        if (apks.size() != 1) throw new GradleException('SBOM requires exactly one assembled variant APK')
+        def apkHash = MessageDigest.getInstance('SHA-256').digest(apks[0].bytes).encodeHex().toString()
+        def rootRef = 'ragbaz-bridge-android'
+        def rootComponent = [type: 'application', 'bom-ref': rootRef,
+            name: 'ragbaz-bridge-android', version: app.android.defaultConfig.versionName,
+            hashes: [[alg: 'SHA-256', content: apkHash]],
+            properties: [[name: 'ragbaz:artifact', value: apks[0].name]]]
+
+        ['build', 'runtime'].each { usage ->
+            def components = new TreeMap<String, Map>()
+            def edges = new TreeMap<String, Set>()
+            edges[rootRef] = new TreeSet<String>()
+            def property = { name, value -> [name: name, value: value.toString()] }
+            def configurations = usage == 'runtime'
+                ? [app.configurations.getByName("${variant}RuntimeClasspath")]
+                : [rootProject.buildscript.configurations.classpath,
+                   app.configurations.getByName("${variant}CompileClasspath")]
+            if (usage == 'build') {
+                // Kotlin compiler/plugin and Java annotation processors are build
+                // dependencies even though they are not packaged in the APK.
+                ['kotlinCompilerClasspath', "kotlinCompilerPluginClasspath${capitalized}",
+                 "${variant}AnnotationProcessor"].each { name ->
+                    def configuration = app.configurations.findByName(name)
+                    if (configuration != null && configuration.canBeResolved) {
+                        configurations.add(configuration)
+                    }
+                }
+            }
+            def encode = { value -> java.net.URLEncoder.encode(value.toString(), 'UTF-8').replace('+', '%20') }
+            def refFor = { group, name, version -> "pkg:maven/${encode(group)}/${encode(name)}@${encode(version)}".toString() }
+            configurations.each { configuration ->
+                // Lenient resolution would silently produce a partial inventory.
+                def resolved = configuration.resolvedConfiguration
+                def artifacts = resolved.resolvedArtifacts.groupBy {
+                    refFor(it.moduleVersion.id.group, it.moduleVersion.id.name, it.moduleVersion.id.version)
+                }
+                def visited = new HashSet<String>()
+                def visit
+                visit = { dependency ->
+                    def ref = refFor(dependency.moduleGroup, dependency.moduleName, dependency.moduleVersion)
+                    if (!components.containsKey(ref)) {
+                        components[ref] = [type: 'library', 'bom-ref': ref, purl: ref,
+                            group: dependency.moduleGroup, name: dependency.moduleName,
+                            version: dependency.moduleVersion, scope: 'required',
+                            properties: [property('ragbaz:usage', usage)]]
+                        edges[ref] = new TreeSet<String>()
+                    }
+                    def component = components[ref]
+                    def configProperty = property('ragbaz:gradle-configuration', configuration.name)
+                    if (!component.properties.contains(configProperty)) component.properties.add(configProperty)
+                    (artifacts[ref] ?: []).each { artifact ->
+                        def digest = MessageDigest.getInstance('SHA-256')
+                        artifact.file.withInputStream { input ->
+                            byte[] buffer = new byte[65536]
+                            int count
+                            while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count)
+                        }
+                        // Module components can resolve several artifact files.
+                        // Name each checksum rather than assign ambiguous module hashes.
+                        def checksum = property("ragbaz:artifact:${artifact.file.name}:sha256", digest.digest().encodeHex())
+                        if (!component.properties.contains(checksum)) component.properties.add(checksum)
+                    }
+                    if (visited.add(ref)) {
+                        dependency.children.each { child -> edges[ref].add(visit(child)) }
+                    }
+                    ref
+                }
+                resolved.firstLevelModuleDependencies.each { dependency -> edges[rootRef].add(visit(dependency)) }
+            }
+
+            def addEnvironment = { ref, type, name, version, properties ->
+                def component = [type: type, 'bom-ref': ref, name: name, properties: properties]
+                if (version != null) component.version = version.toString()
+                components[ref] = component
+                edges[ref] = new TreeSet<String>()
+                edges[rootRef].add(ref)
+            }
+            if (usage == 'build') {
+                addEnvironment('tool:gradle', 'application', 'Gradle', gradle.gradleVersion, [])
+                addEnvironment('tool:jdk', 'application', 'JDK', System.getProperty('java.version'),
+                    [property('ragbaz:vendor', System.getProperty('java.vendor'))])
+                addEnvironment('tool:android-platform', 'framework', 'Android SDK platform', app.android.compileSdk,
+                    [property('ragbaz:api-level', app.android.compileSdk)])
+                addEnvironment('tool:android-build-tools', 'application', 'Android SDK build-tools',
+                    app.android.buildToolsVersion, [])
+            } else {
+                addEnvironment('environment:android', 'operating-system', 'Android', null,
+                    [property('ragbaz:minimum-api-level', app.android.defaultConfig.minSdk),
+                     property('ragbaz:target-api-level', app.android.defaultConfig.targetSdk)])
+            }
+            components.values().each { component ->
+                component.properties.sort { a, b -> (a.name <=> b.name) ?: (a.value <=> b.value) }
+            }
+            def document = [bomFormat: 'CycloneDX', specVersion: '1.6', version: 1,
+                metadata: [timestamp: generatedAt, component: rootComponent,
+                    properties: [property('ragbaz:usage', usage), property('ragbaz:variant', variant)]],
+                components: components.values().toList(),
+                dependencies: edges.collect { ref, children -> [ref: ref, dependsOn: children.toList()] }]
+            def target = new File(reports, "${usage}.cdx.json")
+            target.text = JsonOutput.prettyPrint(JsonOutput.toJson(document)) + '\n'
+            logger.lifecycle("Wrote ${target.name}: ${components.size()} components (${variant}, ${usage})")
+        }
+    }
+}

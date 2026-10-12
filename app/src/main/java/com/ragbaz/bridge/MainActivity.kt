@@ -8,7 +8,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             try {
-                debugServer = DebugServer().also { it.start() }
+                debugServer = DebugServer(java.io.File(filesDir, "indra-debug.key")).also { it.start() }
             } catch (error: java.io.IOException) {
                 android.util.Log.e("RagbazBridge", "Debug listener unavailable", error)
             }
