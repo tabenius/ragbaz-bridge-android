@@ -14,6 +14,7 @@ allprojects {
         mavenCentral()
     }
 }
+apply from: 'gradle/sbom.gradle'
 task clean(type: Delete) {
     delete rootProject.buildDir
 }

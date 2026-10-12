@@ -29,8 +29,23 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
+    packaging {
+        resources {
+            // Both JNA artifacts carry these licenses; preserve them together.
+            merges += ['META-INF/AL2.0', 'META-INF/LGPL2.1']
+        }
+    }
 }
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    // OSHI: Open Source Hardware Instrumentation for system metrics
+    implementation('com.github.oshi:oshi-core:6.9.3') {
+        // Android needs JNA's native libraries from the AAR, not its desktop JAR.
+        exclude group: 'net.java.dev.jna', module: 'jna'
+    }
+    implementation 'net.java.dev.jna:jna:5.18.1@aar'
+    implementation('net.java.dev.jna:jna-platform:5.18.1') {
+        exclude group: 'net.java.dev.jna', module: 'jna'
+    }
 }
