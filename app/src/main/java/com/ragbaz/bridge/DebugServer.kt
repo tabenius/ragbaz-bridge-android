@@ -19,6 +19,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /** Debug-only, activity-scoped loopback link. Use adb forward, never mesh relays. */
 class DebugServer(private val keyFile: File, private val port: Int = 8769) : AutoCloseable {
+    private companion object { const val MAX_CONNECTIONS = 4 }
     @Volatile private var running = false
     private var listener: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -32,7 +33,14 @@ class DebugServer(private val keyFile: File, private val port: Int = 8769) : Aut
         acceptThread = thread(name = "ragbaz-debug-accept", isDaemon = true) {
             try {
                 while (running) {
-                    val connection = Connection(server.accept())
+                    val socket = server.accept()
+                    // Any app with INTERNET can reach loopback. Bound the threads an
+                    // unauthenticated peer can pin before the HMAC handshake runs.
+                    if (connections.size >= MAX_CONNECTIONS) {
+                        try { socket.close() } catch (_: java.io.IOException) {}
+                        continue
+                    }
+                    val connection = Connection(socket)
                     connections.add(connection)
                     thread(name = "ragbaz-debug-auth", isDaemon = true) { connection.start() }
                 }
@@ -89,6 +97,7 @@ class DebugServer(private val keyFile: File, private val port: Int = 8769) : Aut
         }
 
         private fun authenticate() {
+            socket.soTimeout = 5000
             val key = unhex(keyFile.readText().trim())
             val server = ByteArray(32).also { SecureRandom().nextBytes(it) }
             val stream = socket.getOutputStream()

@@ -69,6 +69,11 @@ publishing. Local paths, keys, contacts and call history are not recorded.
 ## Usage (send SMS)
 adb shell am broadcast -a com.ragbaz.bridge.SEND_SMS --es to "+46762868969" --es body "hello" [--ei slot 0]
 
+Every receiver (`SEND_SMS`, `CONTACTS`, `FIND_PHONE`, `OSHI`) requires
+`android.permission.DUMP`. The adb shell user holds it, so the commands above
+keep working; other apps installed on the phone cannot obtain it and so cannot
+send SMS, read contacts or ring the phone through the bridge.
+
 ## Receipt
 /data/local/tmp/ragbaz-bridge-last.json (and app external/filesDir/bridge-last.json)
 
